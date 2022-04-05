@@ -1,0 +1,13 @@
+<launch>
+    <node pkg="final_year_project_py" type="robot1_dead_reckoning.py" name="robot1_dead_reckoning" output="screen"></node>
+    <node pkg="final_year_project_py" type="robot1_forward40cm_controller.py" name="robot1_forward40cm_controller" output="screen"></node>
+    
+    <node pkg="final_year_project_py" type="robot2_dead_reckoning.py" name="robot2_dead_reckoning" output="screen"></node>
+    <node pkg="final_year_project_py" type="robot2_forward40cm_controller.py" name="robot2_forward40cm_controller" output="screen"></node>
+    
+    <node pkg="final_year_project_py" type="robot3_dead_reckoning.py" name="robot3_dead_reckoning" output="screen"></node>
+    <node pkg="final_year_project_py" type="robot3_forward40cm_controller.py" name="robot3_forward40cm_controller" output="screen"></node>
+    
+    <node pkg="gmapping" type="slam_gmapping" name="slam_gmapping" 
+          args="scan:=/robot2/scan_data _odom_frame:=robot2_odom _base_frame:=robot2_base_link _map_frame:=map tf:=/robot2/tf_messages"></node>
+</launch>
