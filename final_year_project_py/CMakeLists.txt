@@ -208,6 +208,7 @@ catkin_install_python(
 install(FILES
     start_40cm.launch
     start_20cm.launch
+    start_40cm_after_project.launch
     DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 

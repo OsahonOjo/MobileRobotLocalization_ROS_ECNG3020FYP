@@ -1,0 +1,40 @@
+<launch>
+    <node pkg="final_year_project_py" type="robot1_dead_reckoning.py" name="robot1_dead_reckoning" output="screen"></node>
+    
+    
+    <node pkg="final_year_project_py" type="robot2_dead_reckoning.py" name="robot2_dead_reckoning" output="screen"></node>
+    
+    
+    <node pkg="final_year_project_py" type="robot3_dead_reckoning.py" name="robot3_dead_reckoning" output="screen"></node>
+    
+    
+    <node pkg="tf" type="static_transform_publisher" name="world_map_broadcaster" args="0 0 0 0 0 0 1 world map 100" />
+    
+    <remap from="map" to="/robot2/map" />
+    <remap from="map_metadata" to="/robot2/map_metadata" />
+    
+    <param name="/slam_gmapping_r2/xmin" type="double" value="0" /> 
+	<param name="/slam_gmapping_r2/xmax" type="double" value="1.219" />
+	<param name="/slam_gmapping_r2/ymin" type="double" value="0" />
+	<param name="/slam_gmapping_r2/ymax" type="double" value="1.219" />
+	<param name="/slam_gmapping_r2/delta" type="double" value="0.1" />  
+	<param name="/slam_gmapping_r2/map_update_interval" type="double" value="1.0" />
+    
+    <node pkg="gmapping" type="slam_gmapping" name="slam_gmapping_r2" 
+          args="scan:=/robot2/scan_data _odom_frame:=robot2_odom _base_frame:=robot2_base_link _map_frame:=map tf:=/robot2/tf_messages"></node>
+          
+    <remap from="map" to="/robot1/map" />
+    <remap from="map_metadata" to="/robot1/map_metadata" />
+          
+    <param name="/slam_gmapping_r1/xmin" type="double" value="0" /> 
+	<param name="/slam_gmapping_r1/xmax" type="double" value="1.219" />
+	<param name="/slam_gmapping_r1/ymin" type="double" value="0" />
+	<param name="/slam_gmapping_r1/ymax" type="double" value="1.219" />
+	<param name="/slam_gmapping_r1/delta" type="double" value="0.1" />
+    <param name="/slam_gmapping_r1/map_update_interval" type="double" value="1.0" />
+          
+    <node pkg="gmapping" type="slam_gmapping" name="slam_gmapping_r1" 
+          args="scan:=/robot1/scan_data _odom_frame:=robot1_odom _base_frame:=robot1_base_link _map_frame:=map tf:=/robot1/tf_messages"></node>
+    
+    
+</launch>

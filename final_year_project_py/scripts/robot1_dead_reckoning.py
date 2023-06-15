@@ -20,7 +20,11 @@ uncertainty = 0
 
 pose_pub = rospy.Publisher('/robot1/pose_estimate', PoseWithCovarianceAndUncertainty, queue_size=10)  # pose estimate publisher  
 
-state = numpy.array([[0.1647], [0.3375], [0.0000]])                   # x (m), y (m), theta (rad.)
+#state = numpy.array([[0.1647], [0.3375], [0.0000]])                   # x (m), y (m), theta (rad.)
+
+state = numpy.array([[0.2406], [0.4617], [1.571]])                   # for R1 initial pose in post-project stuff
+#state = numpy.array([[0.6528], [0.4516], [-0.0000]])                   # for post-project stuff where R2 is at R2's initial pose
+
 p = numpy.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]])   # state uncertainty; state is initially known
 
 
