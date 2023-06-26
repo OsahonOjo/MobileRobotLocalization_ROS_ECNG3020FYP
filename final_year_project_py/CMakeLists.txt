@@ -180,6 +180,8 @@ catkin_install_python(
     scripts/robot3_forward20cm_controller.py
     scripts/robot2_forward20cm_controller.py
     scripts/robot1_forward20cm_controller.py
+    scripts/LKM_EncodersCubeBot.py
+    scripts/HoughLocalization.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
