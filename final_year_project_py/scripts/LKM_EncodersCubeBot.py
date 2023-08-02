@@ -28,19 +28,19 @@ KL = 0.00375                 		# error constant: left wheel
 BEACON_DETECTOR_RESOLUTION = 5*(math.pi/180)	# radians
 BEACON_DETECTOR_STD_DEVIATION = 0.34 * BEACON_DETECTOR_RESOLUTION
 BEACON_DETECTOR_VARIANCE = BEACON_DETECTOR_STD_DEVIATION**2
-beaconDataCovariance = numpy.array([[0, 0], [0, BEACON_DETECTOR_VARIANCE]])
+beaconDataCovariance = numpy.diag([0, BEACON_DETECTOR_VARIANCE])
 bearingNoiseSamples = numpy.random.default_rng().normal(0, BEACON_DETECTOR_VARIANCE, 1000)
 bearingNoiseSamplesIndex = 0
 
 initialPose2D = {}
 beaconPositions = {}
-with open('initialValues.json') as json_file:
+with open('/home/osahon/catkin_ws/src/final_year_project_py/scripts/initialValues.json') as json_file:
     data = json.load(json_file)
     initialPose2D = data['EncodersCubeBotInitialPose']
     beaconPositions = { "beacon1": data['Beacon1Position'], "beacon2": data['Beacon2Position'] }
 
 state = numpy.array([[initialPose2D['x']], [initialPose2D['y']], [initialPose2D['theta']]])
-p = numpy.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+p = numpy.diag([0, 0, 0])
 uncertainty = 0
 
 posePublisher = rospy.Publisher('/EncodersCubeBot/pose_estimate', PoseWithCovarianceStamped, queue_size=10)  
@@ -48,8 +48,10 @@ posePublisher = rospy.Publisher('/EncodersCubeBot/pose_estimate', PoseWithCovari
 
 # NOTE: tightly-coupled function: modifies 5, uses several other global variables
 def LKMPredictionStep(odometry):
-	currentLeftWheelTicks = odometry['x']
-	currentRightWheelTicks = odometry['y']
+	# currentLeftWheelTicks = odometry['x']
+	currentLeftWheelTicks = odometry.x
+	# currentRightWheelTicks = odometry['y']
+	currentRightWheelTicks = odometry.y
 	global previousLeftWheelTicks, previousRightWheelTicks, state, p, uncertainty
 
 	# 1. estimate state
@@ -69,7 +71,7 @@ def LKMPredictionStep(odometry):
 	thetaArg = theta + (delTheta/2)	
 
 	state = state + [[delS*math.cos(thetaArg)], [delS*math.sin(thetaArg)], [delTheta]]
-	odometryCovariance = numpy.array([[errorSr, 0], [0, errorSl]])	
+	odometryCovariance = numpy.diag([errorSr, errorSl])	
 
 
 	# 2. predict covariance
@@ -82,20 +84,21 @@ def LKMPredictionStep(odometry):
 	fs = numpy.array([[(0.5*math.cos(thetaArg))-(delS/(2*WHEELBASE))*math.sin(thetaArg), (0.5*math.cos(thetaArg))+((delS/(2*WHEELBASE))*math.sin(thetaArg))], [(0.5*math.sin(thetaArg))+(delS/(2*WHEELBASE))*math.cos(thetaArg), (0.5*math.sin(thetaArg))-((delS/(2*WHEELBASE))*math.cos(thetaArg))], [(1/WHEELBASE), (-1/WHEELBASE)]])
 	fsT = fs.transpose()
 	
-	p = fp.dot(p).dot(fpT) + fs.dot(odometryCovariance).dot(fsT)
+	p = (fp @ p @ fpT) + (fs @ odometryCovariance @ fsT)
 
-	# determinant of just the state estimate part of the covariance matrix
+	# overall uncertainty for pose (from Corke, pg. 160)
 	robotPoseDeterminant = ( p[0][0] * ( (p[1][1]*p[2][2]) - (p[2][1]*p[1][2]) )) - ( p[0][1] * ( (p[1][0]*p[2][2]) - (p[2][0]*p[1][2]) )) + ( p[0][2] * ( (p[1][0]*p[2][1]) - (p[1][1]*p[2][0]) ))
 	uncertainty = math.sqrt(abs(robotPoseDeterminant))
 
 	previousLeftWheelTicks = currentLeftWheelTicks
 	previousRightWheelTicks = currentRightWheelTicks
 
-	print("state: \n", state)
-	print("Covariance matrix: \n", p)
-	print("uncertainty: \n", uncertainty)
+	# print("state: \n", state)
+	# print("Covariance matrix: \n", p)
+	# print("uncertainty: \n", uncertainty)
 
-	# publishPoseWithCovariance(state, p)
+	print("From Prediction Step")
+	publishPoseWithCovariance(state, p)
 
 
 # beaconData: { header={ stamp={ secs, nsecs }, frame_id }, point={ x (bearing [degrees]), y, z } })
@@ -104,9 +107,12 @@ def LKMUpdateStepWithBeaconData(beaconData):
 
 	# 3. calculate innovation: measured angle - expected angle + sensor noise
 
-	measuredBearing = beaconData['point']['x']
-	beaconX = beaconPositions[beaconData['header']['frame_id']]['x']
-	beaconY = beaconPositions[beaconData['header']['frame_id']]['y']
+	# measuredBearing = beaconData['point']['x']
+	measuredBearing = beaconData.point.x	
+	# beaconX = beaconPositions[beaconData['header']['frame_id']]['x']
+	beaconX = beaconPositions[beaconData.header.frame_id]['x']
+	# beaconY = beaconPositions[beaconData['header']['frame_id']]['y']
+	beaconY = beaconPositions[beaconData.header.frame_id]['y']
 	robotX = state[0][0]
 	robotY = state[1][0]
 	robotTheta = state[2][0]
@@ -127,27 +133,27 @@ def LKMUpdateStepWithBeaconData(beaconData):
 	r = expectedBeaconRange
 	hx = numpy.array([[-(beaconX - robotX)/r, -(beaconY - robotY)/r, 0], [(beaconY - robotY)/r**2, -(beaconX - robotX)/r**2, -1]])
 	hxT = hx.transpose()
-	print("hw: \n", hw, "\nhx: \n", hx)
-
-	# TODO
-	s = hx*p*hxT + hw*beaconDataCovariance*hwT
-
-	sInverse = numpy.linalg.inv(s)	# A non-square matrix does not have an inverse
-	k = p*hxT*sInverse
-	state = state + (k*innovation)
+	s = hx @ p @ hxT + hw @ beaconDataCovariance @ hwT
+	try:
+		sInverse = numpy.linalg.inv(s)	# A non-square matrix does not have an inverse
+	except numpy.linalg.LinAlgError("Singular matrix") as e:
+		print(e)	# A square matrix is singular if and only if its determinant is 0
+	k = p @ hxT @ sInverse
+	state = state + (k @ innovation)
 
 
 	# 5. update covariance
 
-	p = p - k*hx*p
+	p = p - (k @ hx @ p)
 	robotPoseDeterminant = ( p[0][0] * ( (p[1][1]*p[2][2]) - (p[2][1]*p[1][2]) )) - ( p[0][1] * ( (p[1][0]*p[2][2]) - (p[2][0]*p[1][2]) )) + ( p[0][2] * ( (p[1][0]*p[2][1]) - (p[1][1]*p[2][0]) ))
 	uncertainty = math.sqrt(abs(robotPoseDeterminant))
 
-	print("state: \n", state)
-	print("Covariance matrix: \n", p)
-	print("uncertainty: \n", uncertainty)
+	# print("state: \n", state)
+	# print("Covariance matrix: \n", p)
+	# print("uncertainty: \n", uncertainty)
 
-	# publishPoseWithCovariance(state, p)
+	print("From Update Step")
+	publishPoseWithCovariance(state, p)
 
 
 # https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
@@ -169,9 +175,9 @@ def eulerToQuaternion(roll, pitch, yaw):
 
 def publishPoseWithCovariance(pose2D, covariance):
 	pose = {}
-	pose.position = { "x": round(pose2D[0][0], 3), "y": round(pose2D[1][0], 3), "z": 0 }
+	pose['position'] = { "x": round(pose2D[0][0], 3), "y": round(pose2D[1][0], 3), "z": 0 }
 	qx, qy, qz, qw = eulerToQuaternion(0, 0, round(pose2D[2][0]))
-	pose.orientation = { "x": qx, "y": qy, "z": qz, "w": qw }
+	pose['orientation'] = { "x": qx, "y": qy, "z": qz, "w": qw }
 	
 	poseStamped = PoseWithCovarianceStamped()
 	poseStamped.pose.pose = pose
@@ -188,8 +194,8 @@ def ROSNode():
 
 if __name__ == '__main__':
 	try:
-		# ROSNode()
-		LKMPredictionStep({"x": 1, "y": 2, "z": -1})
-		LKMUpdateStepWithBeaconData({ "header": { "frame_id": "beacon1" }, "point": { "x": math.pi/5 } })
+		ROSNode()
+		# LKMPredictionStep({"x": 1, "y": 2, "z": -1})
+		# LKMUpdateStepWithBeaconData({ "header": { "frame_id": "beacon1" }, "point": { "x": math.pi/5 } })
 	except rospy.ROSInterruptException:
 		pass
