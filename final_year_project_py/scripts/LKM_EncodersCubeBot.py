@@ -141,6 +141,8 @@ def LKMUpdateStepWithBeaconData(beaconData):
 	k = p @ hxT @ sInverse
 	state = state + (k @ innovation)
 
+	// only_bearing_innovation_no_range branch
+
 
 	# 5. update covariance
 
