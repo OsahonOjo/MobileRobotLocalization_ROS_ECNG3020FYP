@@ -149,9 +149,9 @@ def LKMUpdateStepWithBeaconData(beaconData):
 	print("hxT: ", numpy.shape(hxT))
 	
 	# LESSON: 
-	# when multiplying with 1x1 scalar, use * (element-wise mult.) instead of @ (matrix mult.)
-	# you'll still get the result you expect
-	# ALWAYS use reshape() to explicitly set matrix dimensions
+	# -> when multiplying with 1x1 scalar, use * (element-wise mult.) instead of @ (matrix mult.)
+	#    you'll still get the result you expect
+	# -> ALWAYS use reshape() to explicitly set matrix dimensions
 
 	# s1 = hx @ p @ hxT  # 1x1 scalar
 	# print("s1: \n", s1)
@@ -196,82 +196,12 @@ def LKMUpdateStepWithBeaconData(beaconData):
 	robotPoseDeterminant = ( p[0][0] * ( (p[1][1]*p[2][2]) - (p[2][1]*p[1][2]) )) - ( p[0][1] * ( (p[1][0]*p[2][2]) - (p[2][0]*p[1][2]) )) + ( p[0][2] * ( (p[1][0]*p[2][1]) - (p[1][1]*p[2][0]) ))
 	uncertainty = math.sqrt(abs(robotPoseDeterminant))
 
-	# From Prediction Step
-	# p: 
-	# [[1.16729523e-06 3.13611861e-06 6.68494671e-05]
-	# [3.13611861e-06 9.40076721e-06 1.98167016e-04]
-	# [6.68494671e-05 1.98167016e-04 4.18230873e-03]]
-	# beaconDataCovariance: 
-	# [[0.00088034]]
-	# r: 
-	# 1.033969272961315
-	# hw: 
-	# [[1]]
-	# hwT:  (1, 1)
-	# hx: 
-	# [[ 0.20245612 -0.94571894 -1.        ]]
-	# hxT:  (3, 1)
-	# s: 
-	# [[0.00541766]]
-	# sInverse: 
-	# [[184.58152407]]
-	# k:  (3, 1)
-	# [[-0.012843  ]
-	# [-0.03810179]
-	# [-0.80407126]]
-	# state: 
-	# [[0.22252566]
-	# [0.40676142]
-	# [0.41427224]]
-	# p: 
-	# [[2.73691566e-07 4.85032883e-07 1.09029708e-05]
-	# [4.85032883e-07 1.53569701e-06 3.21885582e-05]
-	# [1.09029708e-05 3.21885582e-05 6.79625626e-04]]
-	# From Update Step
-	# p: 
-	# [[2.73691566e-07 4.85032883e-07 1.09029708e-05]
-	# [4.85032883e-07 1.53569701e-06 3.21885582e-05]
-	# [1.09029708e-05 3.21885582e-05 6.79625626e-04]]
-	# beaconDataCovariance: 
-	# [[0.00088034]]
-	# r: 
-	# 0.3205065356189586
-	# hw: 
-	# [[1]]
-	# hwT:  (1, 1)
-	# hx: 
-	# [[ 2.4944312   1.87419176 -1.        ]]
-	# hxT:  (3, 1)
-	# s: 
-	# [[0.00139655]]
-	# sInverse: 
-	# [[716.04830459]]
-	# k:  (3, 1)
-	# [[-0.00666728]
-	# [-0.02012131]
-	# [-0.42397319]]
-	# state: 
-	# [[0.23454169]
-	# [0.4430248 ]
-	# [1.17837265]]
-	# p: 
-	# [[2.11611007e-07 2.97678952e-07 6.95526253e-06]
-	# [2.97678952e-07 9.70278530e-07 2.02747053e-05]
-	# [6.95526253e-06 2.02747053e-05 4.28590511e-04]]
-	# From Update Step
-
-
-
-	# [ERROR] [1690955382.326007]: bad callback: <function LKMUpdateStepWithBeaconData at 0x7fae8f606160>
-	# Traceback (most recent call last):
-	# File "/opt/ros/noetic/lib/python3/dist-packages/rospy/topics.py", line 750, in _invoke_callback
-	# 	cb(msg)
-	# File "/home/osahon/catkin_ws/src/final_year_project_py/scripts/LKM_EncodersCubeBot.py", line 150, in LKMUpdateStepWithBeaconData
-	# 	s2 = hw @ beaconDataCovariance @ hwT
-	# ValueError: matmul: Input operand 0 does not have enough dimensions (has 0, gufunc core with signature (n?,k),(k,m?)->(n?,m?) requires 1)
-
 	print("From Update Step")
-	publishPoseWithCovariance(state, p)
+	pose2D = [state[0][0], state[1][0], state[2][0]]
+	covariance1x36 = numpy.append(numpy.reshape(p, (1,9)), numpy.zeros(27))
+	print("pose2D: \n", pose2D)
+	print("covariance1x36: \n", covariance1x36)
+	publishPoseWithCovariance(pose2D, covariance1x36)
 
 
 # https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
@@ -291,15 +221,23 @@ def eulerToQuaternion(roll, pitch, yaw):
     return x, y, z, w
 
 
-def publishPoseWithCovariance(pose2D, covariance):
-	pose = {"position": {}, "orientation": {}}
-	pose['position'] = { "x": round(pose2D[0][0], 3), "y": round(pose2D[1][0], 3), "z": 0 }
-	qx, qy, qz, qw = eulerToQuaternion(0, 0, round(pose2D[2][0]))
-	pose['orientation'] = { "x": qx, "y": qy, "z": qz, "w": qw }
-	
+def publishPoseWithCovariance(pose2D, covariance1D):
+	# LESSON: 
+	# -> initialize a message type and then set each property using its full dot notation name
+	#    doing this will prevent you from getting a bunch of "AttributeError: 'dict' object has no attribute 'attribute'" errors
+
 	poseStamped = PoseWithCovarianceStamped()
-	poseStamped.pose.pose = pose
-	poseStamped.pose.covariance = covariance.tolist()
+	qx, qy, qz, qw = eulerToQuaternion(0, 0, round(pose2D[2]))	
+	print("poseStamped init: \n", poseStamped)
+	poseStamped.pose.pose.position.x = round(pose2D[0], 3)
+	poseStamped.pose.pose.position.y = round(pose2D[1], 3)
+	poseStamped.pose.pose.position.z = 0
+	poseStamped.pose.pose.orientation.x = qx
+	poseStamped.pose.pose.orientation.y = qy
+	poseStamped.pose.pose.orientation.z = qz
+	poseStamped.pose.pose.orientation.w = qw
+	poseStamped.pose.covariance = covariance1D.tolist()
+	print("poseStamped: \n", poseStamped)
 	posePublisher.publish(poseStamped)
 
 
