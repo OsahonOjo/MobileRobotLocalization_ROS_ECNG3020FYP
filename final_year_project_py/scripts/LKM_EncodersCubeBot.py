@@ -1,49 +1,168 @@
 #!/usr/bin/env python
 """
 @file LKM_EncodersCubeBot.py
-@brief This script: receives encoder data from CoppeliaSim, uses it for pose and covariance estimation (dead-reckoning using EKF), then publishes the current pose estimate and uncertainty twice per second
+@brief This script receives encoder data from CoppeliaSim, uses it for pose and covariance estimation (localization using EKF), then publishes the current pose estimate and uncertainty twice per second
 """
 
 
 from __future__ import print_function
-import json
-import rospy, math, numpy
+import json, rospy, math, numpy
 from geometry_msgs.msg import Point, PointStamped, PoseWithCovarianceStamped
 # from final_year_project_py.msg import PoseWithCovarianceAndUncertainty
 
 
 WHEEL_RADIUS = 0.035   			# in meters
 WHEELBASE = 0.1					# distance between wheels (meters)
-
-# for encoder
-PPR = 11                        # 11 pulses (22 transitions) per rotation
-ANGLE_PER_TICK = (2*math.pi)/(PPR*2)	# 1 tick per transition
-previousLeftWheelTicks = 0
-previousRightWheelTicks = 0
-
-# my guess for error constants: accuracy/max = 45mm/12000mm = 0.00375
-KR = 0.00375                 		# error constant: right wheel       
-KL = 0.00375                 		# error constant: left wheel
-
+PPR = 11                        # encoders: 11 pulses (22 transitions) per rotation
+ANGLE_PER_TICK = (2*math.pi)/(PPR*2)	# encoders: 1 tick per transition
+KR = 0.00375                 		# right wheel error constant guess: accuracy/max = 45mm/12000mm = 0.00375
+KL = 0.00375                 		# left wheel error constant guess: accuracy/max = 45mm/12000mm = 0.00375
 BEACON_DETECTOR_RESOLUTION = 5*(math.pi/180)	# radians
 BEACON_DETECTOR_STD_DEVIATION = 0.34 * BEACON_DETECTOR_RESOLUTION
 BEACON_DETECTOR_VARIANCE = BEACON_DETECTOR_STD_DEVIATION**2
+
+prevTotalLeftTicks = 0
+prevTotalRightTicks = 0
 beaconDataCovariance = numpy.array([BEACON_DETECTOR_VARIANCE]).reshape((1,1))
 bearingNoiseSamples = numpy.random.default_rng().normal(0, BEACON_DETECTOR_VARIANCE, 1000)
 bearingNoiseSamplesIndex = 0
-
 initialPose2D = {}
 beaconPositions = {}
 with open('/home/osahon/catkin_ws/src/final_year_project_py/scripts/initialValues.json') as json_file:
     data = json.load(json_file)
     initialPose2D = data['EncodersCubeBotInitialPose']
     beaconPositions = { "beacon1": data['Beacon1Position'], "beacon2": data['Beacon2Position'] }
-
 state = numpy.array([[initialPose2D['x']], [initialPose2D['y']], [initialPose2D['theta']]]).reshape((3,1))
 p = numpy.diag([0, 0, 0]).reshape((3,3))
 uncertainty = 0
-
 posePublisher = rospy.Publisher('/EncodersCubeBot/pose_estimate', PoseWithCovarianceStamped, queue_size=10)  
+
+
+def ROSNode():
+	rospy.init_node('LKM_EncodersCubeBot', anonymous=False) 
+	rospy.Subscriber('/EncodersCubeBot/odometry', Point, lambda odometry : predictionStepCallback(odometry.x, odometry.y))
+	rospy.Subscriber('/EncodersCubeBot/beacon_data', PointStamped, LKMUpdateStepWithBeaconData)
+	rospy.spin()	#  go into an infinite loop until it receives a shutdown signal (Ctrl+C)
+
+
+# NOTE: coupled to several global variables (see global keyword below)
+def predictionStepCallback(totalLeftTicks, totalRightTicks):
+	global state, p, uncertainty
+	
+	newLeftTicks, newRightTicks = getNewEncoderTicksCount(totalLeftTicks, getPrevTotalLeftTicks(), totalRightTicks, getPrevTotalRightTicks())
+	delSl, delSr = encoderTicksToAngularDistances(newLeftTicks, newRightTicks)
+	delS, delTheta = calculateControlInput(delSl, delSr)
+	state, thetaArg = motionModel(state, delS, delTheta)
+	
+	errorSl, errorSr = calculateControlError(delSl, delSr)
+	odometryCovariance = numpy.diag([errorSr, errorSl]).reshape((2,2))
+	fp, fpT, fs, fsT = calculateJacobians(delS, thetaArg)
+	p = (fp @ p @ fpT) + (fs @ odometryCovariance @ fsT)
+	uncertainty = pose2DUncertainty(p)
+
+	setprevTotalLeftTicks(totalLeftTicks)
+	setPrevTotalRightTicks(totalRightTicks)
+	return True
+
+# NOTE: following four functions are coupled to global variables (see global keyword below)
+def getPrevTotalLeftTicks(): 
+	return prevTotalLeftTicks
+
+def setprevTotalLeftTicks(ticks):
+	global prevTotalLeftTicks
+	prevTotalLeftTicks = ticks
+
+def getPrevTotalRightTicks():
+	return prevTotalRightTicks
+
+def setPrevTotalRightTicks(ticks):
+	global prevTotalRightTicks
+	prevTotalRightTicks = ticks
+
+def getNewEncoderTicksCount(currentTotalLeftTicks, prevTotalLeftTicks, currentTotalRightTicks, prevTotalRightTicks):
+	newLeftTicks = currentTotalLeftTicks - prevTotalLeftTicks
+	newRightTicks = currentTotalRightTicks - prevTotalRightTicks
+	return newLeftTicks, newRightTicks	
+
+def encoderTicksToAngularDistances(newLeftWheelTicks, newRightWheelTicks, wheelRadius=WHEEL_RADIUS, anglePerTick=ANGLE_PER_TICK):
+	"""
+    Calculates the angular distance travelled by the differential robot's wheels using new encoder ticks ("new encoder ticks" referring to only the number of ticks counted in the last interval, not to a running total)
+    :param newLeftWheelTicks: 	number of new encoder ticks on the left wheel
+	:param newRightWheelTicks: 	number of new encoder ticks on the right wheel
+	:param wheelRadius: 		radius of the wheels the encoders are attached to
+	:param anglePerTick: 		angle covered per encoder tick
+    :returns: 					angular distances delSl, delSr
+    """
+	delSl = wheelRadius * (newLeftWheelTicks * anglePerTick)
+	delSr = wheelRadius * (newRightWheelTicks * anglePerTick)
+	return delSl, delSr
+
+def calculateControlInput(delSl, delSr, wheelbase=WHEELBASE):
+	"""
+    Computes the control function inputs using the angular distances travelled by the left and right wheels of the differential robot
+    :param delSl: 		tiny (hence del) distance travelled by the left wheel
+    :param delSr: 		tiny (hence del) distance travelled by the right wheel
+    :param wheelbase: 	distance between differential robot's two wheels
+    :returns: 			control inputs [delS; delTheta]
+    """
+	delS = (delSr + delSl) / 2
+	delTheta = (delSr - delSl) / wheelbase
+	return delS, delTheta
+
+def calculateControlError(delSl, delSr, kl=KL, kr=KR):
+	"""
+    Computes the errors for the control function inputs using error constants, and the angular distances travelled by the left and right wheels of the differential robot
+    :param delSl: 	tiny (hence del) distance travelled by the left wheel
+    :param delSr: 	tiny (hence del) distance travelled by the right wheel
+    :param kl: 		error constant for left wheel
+    :param kr: 		error constant for right wheel
+    :returns: 		error values errorSl, errorSr
+    """
+	errorSl = kl*abs(delSl)
+	errorSr = kr*abs(delSr)
+	return errorSl, errorSr
+
+def motionModel(state, delS, delTheta):
+	"""
+	Computes the motion model based on current state and input function
+	:param state: 		3x1 pose estimation [x; y; z]
+	:param delS: 		control function inputs: tiny (hence del) distance travelled by imaginary point along robot's centerline
+	:param delTheta: 	control function inputs: tiny (hence del) change in robot's bearing/orientation
+	:returns: 			the resulting state after the control function is applied
+	:returns:			a value thetaArg needed for other calculation
+	"""
+	theta = state[2][0]
+	thetaArg = theta + (delTheta/2)
+	state = state + [[delS*math.cos(thetaArg)], [delS*math.sin(thetaArg)], [delTheta]]
+	return state, thetaArg
+
+def calculateJacobians(delS, thetaArg, wheelbase=WHEELBASE):
+	"""
+    Calculates the angular distance travelled by the differential robot's wheels using new encoder ticks ("new encoder ticks" referring to only the number of ticks counted in the last interval, not to a running total)
+    :param delS: 		control function inputs: tiny (hence del) distance travelled by imaginary point along robot's centerline
+	:param thetaArg: 	a value equal to theta + (delTheta/2), needed for other calculation
+	:param wheelbase: 	distance between differential robot's two wheels
+    :returns: 			jacobians: partial derivative of configuration w.r.t state (x,y,z) (fp) and odometry (delSl, delSr) (fs)
+    """
+	fp = numpy.array([[1, 0, -1*delS*math.sin(thetaArg)], [0, 1, delS*math.cos(thetaArg)], [0, 0, 1]]).reshape((3,3))
+	fpT = fp.transpose().reshape((3,3))
+	fs = numpy.array([[(0.5*math.cos(thetaArg))-(delS/(2*wheelbase))*math.sin(thetaArg), (0.5*math.cos(thetaArg))+((delS/(2*wheelbase))*math.sin(thetaArg))], [(0.5*math.sin(thetaArg))+(delS/(2*wheelbase))*math.cos(thetaArg), (0.5*math.sin(thetaArg))-((delS/(2*wheelbase))*math.cos(thetaArg))], [(1/wheelbase), (-1/wheelbase)]]).reshape((3,2))
+	fsT = fs.transpose().reshape((2,3))	
+	return fp, fpT, fs, fsT
+
+def pose2DUncertainty(p):
+	"""
+	Calculates the overall uncertainty in the state estimate
+	:param p: 		3x3 the predicted covariance
+	:returns:     	the overall uncertainty in the robot pose estimate
+	"""
+	if numpy.shape(p) != (3,3):
+		return None
+	determinant = ( p[0][0] * ( (p[1][1]*p[2][2]) - (p[2][1]*p[1][2]) )) - ( p[0][1] * ( (p[1][0]*p[2][2]) - (p[2][0]*p[1][2]) )) + ( p[0][2] * ( (p[1][0]*p[2][1]) - (p[1][1]*p[2][0]) ))
+	return math.sqrt(abs(determinant))
+
+
+# def update(xEst, PEst, u, z, initP):
 
 
 # NOTE: tightly-coupled function: modifies 5, uses several other global variables
@@ -52,12 +171,12 @@ def LKMPredictionStep(odometry):
 	currentLeftWheelTicks = odometry.x
 	# currentRightWheelTicks = odometry['y']
 	currentRightWheelTicks = odometry.y
-	global previousLeftWheelTicks, previousRightWheelTicks, state, p, uncertainty
+	global prevTotalLeftTicks, prevTotalRightTicks, state, p, uncertainty
 
 	# 1. estimate state
 
-	leftTicksDifference = currentLeftWheelTicks - previousLeftWheelTicks
-	rightTicksDifference = currentRightWheelTicks - previousRightWheelTicks
+	leftTicksDifference = currentLeftWheelTicks - prevTotalLeftTicks
+	rightTicksDifference = currentRightWheelTicks - prevTotalRightTicks
 	
 	# TODO: how to sample random (Gaussian) noise for encoder: del_sl += error_sl ?
 	delSl = WHEEL_RADIUS * (leftTicksDifference * ANGLE_PER_TICK)
@@ -92,8 +211,8 @@ def LKMPredictionStep(odometry):
 	robotPoseDeterminant = ( p[0][0] * ( (p[1][1]*p[2][2]) - (p[2][1]*p[1][2]) )) - ( p[0][1] * ( (p[1][0]*p[2][2]) - (p[2][0]*p[1][2]) )) + ( p[0][2] * ( (p[1][0]*p[2][1]) - (p[1][1]*p[2][0]) ))
 	uncertainty = math.sqrt(abs(robotPoseDeterminant))
 
-	previousLeftWheelTicks = currentLeftWheelTicks
-	previousRightWheelTicks = currentRightWheelTicks
+	prevTotalLeftTicks = currentLeftWheelTicks
+	prevTotalRightTicks = currentRightWheelTicks
 
 	# print("state: \n", state)
 	# print("Covariance matrix: \n", p)
@@ -204,23 +323,6 @@ def LKMUpdateStepWithBeaconData(beaconData):
 	publishPoseWithCovariance(pose2D, covariance1x36)
 
 
-# https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
-def eulerToQuaternion(roll, pitch, yaw):
-    cr = math.cos(roll * 0.5)
-    sr = math.sin(roll * 0.5)
-    cp = math.cos(pitch * 0.5)
-    sp = math.sin(pitch * 0.5)
-    cy = math.cos(yaw * 0.5)
-    sy = math.sin(yaw * 0.5)
-
-    w = cr * cp * cy + sr * sp * sy
-    x = sr * cp * cy - cr * sp * sy
-    y = cr * sp * cy + sr * cp * sy
-    z = cr * cp * sy - sr * sp * cy
-
-    return x, y, z, w
-
-
 def publishPoseWithCovariance(pose2D, covariance1D):
 	# LESSON: 
 	# -> initialize a message type and then set each property using its full dot notation name
@@ -240,12 +342,21 @@ def publishPoseWithCovariance(pose2D, covariance1D):
 	print("poseStamped: \n", poseStamped)
 	posePublisher.publish(poseStamped)
 
+# https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
+def eulerToQuaternion(roll, pitch, yaw):
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
 
-def ROSNode():
-	rospy.init_node('LKM_EncodersCubeBot', anonymous=False) 
-	rospy.Subscriber('/EncodersCubeBot/odometry', Point, LKMPredictionStep)
-	rospy.Subscriber('/EncodersCubeBot/beacon_data', PointStamped, LKMUpdateStepWithBeaconData)
-	rospy.spin()	#  go into an infinite loop until it receives a shutdown signal (Ctrl+C)
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+
+    return x, y, z, w
 
 
 if __name__ == '__main__':
